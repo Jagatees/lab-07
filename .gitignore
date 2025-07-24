@@ -1,0 +1,27 @@
+# Dependencies
+# This is the most important one!
+/node_modules
+
+# Logs
+# Log files are generated during runtime and should not be committed.
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment Variables
+# Never commit your secret keys or local configuration!
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Build output
+# The artifact created by the GitHub Action workflow.
+www-build.tar.gz
+
+# OS-generated files
+.DS_Store
+Thumbs.db
