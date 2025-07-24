@@ -1,4 +1,4 @@
-name: Node.js Selenium Testing
+name: Node.js Selenium CI
 
 on:
   push:
@@ -14,95 +14,95 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
+      # Cache Node.js modules for faster builds
       - name: Cache Node.js modules
         uses: actions/cache@v4
         with:
           path: node_modules
+          # Create a unique cache key based on package-lock.json
           key: ${{ runner.os }}-node-modules-${{ hashFiles('**/package-lock.json') }}
+          # Use a fallback key if the main key is not found
           restore-keys: ${{ runner.os }}-node-modules
 
       - name: Install Node.js dependencies
-        run: npm install
+        run: npm ci # 'npm ci' is generally preferred for CI over 'npm install'
 
-      - name: Prepare artifacts
+      - name: Prepare build artifact
         run: |
-          tar -czvf www-build.tar.gz ./package.json ./src/server.js test
-          ls -l
+          # Ensure all necessary files are included and tar output is clear
+          tar -czvf www-build.tar.gz ./package.json ./package-lock.json ./src/server.js ./tests/SeleniumTest.mjs ./tests/test.js
+          echo "Artifact created: www-build.tar.gz"
 
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: www-build
           path: www-build.tar.gz
 
   test:
-    needs: build
+    name: Run Unit & Selenium Tests
+    needs: build # This job depends on the build job completing successfully
     runs-on: ubuntu-latest
-    container:
-      image: node:20
-      ports:
-        - 3000:3000
-      options: --network-alias=testserver
-
-    env:
-      TEST_BASE_URL: http://testserver:3000
-      SELENIUM_HOST: http://selenium:4444/wd/hub
-
+    
+    # Define services that will run alongside the main job container
     services:
+      # Service for Selenium (using the ARM-compatible image)
       selenium:
-        image: selenium/standalone-chrome
+        image: seleniarm/standalone-chromium:latest
         ports:
           - 4444:4444
+        # Healthcheck to ensure Selenium is ready before tests run
+        options: >-
+          --health-cmd "curl --fail http://localhost:4444/wd/hub/status || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      # Service for your Node.js application
+      appserver:
+        image: node:20-alpine # Use a small Node.js image
+        working-directory: ${{ github.workspace }} # Set context to the root of the repo
+        ports:
+          - 3000:3000 # Expose port 3000
+        # This command starts your server. It should start in the background.
+        # GitHub Actions handles backgrounding for services automatically.
+        command: ["node", "src/server.js"]
+        # Healthcheck to ensure your Node.js server is ready
+        options: >-
+          --health-cmd "curl --fail http://localhost:3000 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      # Environment variables for the test script to use
+      # These now correctly point to the services
+      TEST_BASE_URL: http://testserver:3000
+      SELENIUM_HOST: http://selenium:4444/wd/hub
 
     steps:
       - name: Download built files
         uses: actions/download-artifact@v4
         with:
           name: www-build
-          path: .
+          path: ${{ github.workspace }} # Download to the root directory
 
       - name: Extract artifacts
         run: |
-          tar -xzvf www-build.tar.gz
-          ls -l
+          tar -xzvf www-build.tar.gz -C ${{ github.workspace }} # Extract to the root directory
+          echo "Extracted files."
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: List node_modules
-        run: ls -l node_modules
-
-      - name: List files for debugging
-        run: |
-          echo "Current directory:"
-          pwd
-          echo "Files in the current directory:"
-          ls -ltra .
-          echo "Files in the src directory:"
-          ls -ltra src/
-          echo "Files in the test directory:"
-          ls -ltra test/
+      # Removed manual server start/wait as services handle it
+      # Removed manual Selenium wait as service healthcheck handles it
 
       - name: Run unit tests
         run: npm test
 
-      - name: Start Node.js server
-        run: |
-          nohup node src/server.js &  # Start the server in the background
-          sleep 5  # Give the server some time to start
-
-      - name: Verify server is running
-        run: |
-          curl -f http://localhost:3000 || { echo "Server failed to start"; exit 1; }
-
-      - name: Wait for Selenium server to be up
-        run: |
-          for i in {1..10}; do
-            curl -s $SELENIUM_HOST && break || sleep 3
-          done
-
-      - name: Run Selenium tests
-        run: node test/SeleniumTest.mjs github
-
+      - name: Run Selenium integration tests
+        # Ensure the script uses the correct environment URLs
+        run: node tests/SeleniumTest.mjs github
