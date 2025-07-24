@@ -1,15 +1,44 @@
-name: Node.js Selenium Testing
+name: Full CI (Dep-Check + Build + Test)
 
-# This workflow runs on any push or pull request to the main branch
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
 
 jobs:
-  # The 'build' job prepares the application files
+  # Job 1: Security scan for known vulnerabilities in dependencies
+  owasp-dep-check:
+    name: OWASP Dependency-Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run OWASP Dependency-Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          # Use the correct project name
+          project: "ssd-lab7"
+          scan: "."
+          format: "HTML"
+          out: "reports"
+          # This setting prevents the job from failing on any found vulnerability
+          failOnCVSS: 0
+          # IMPORTANT: You must add this secret to your GitHub repository settings
+          nvdApiKey: "${{ secrets.NVD_API_KEY }}"
+      
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: reports/dependency-check-report.html
+    
+  # Job 2: Build the application and prepare it for testing
   build:
+    name: Build and Package
+    # This job runs after the security scan is complete
+    needs: owasp-dep-check
     runs-on: ubuntu-latest
     steps:
     - name: Checkout repository
@@ -22,11 +51,9 @@ jobs:
         cache: 'npm'
 
     - name: Install dependencies
-      # 'npm ci' is faster and more reliable for CI environments
       run: npm ci
 
     - name: Create build artifact
-      # Package all necessary files into a compressed tarball
       run: tar -czf www-build.tar.gz src/ tests/ package.json package-lock.json
 
     - name: Upload artifact for test job
@@ -35,18 +62,18 @@ jobs:
         name: www-build
         path: www-build.tar.gz
 
-  # The 'test' job runs after 'build' is successful
+  # Job 3: Run all tests (Unit and Selenium UI)
   test:
+    name: Run Tests (Unit + Selenium)
+    # This job runs after the build is complete
     needs: build
     runs-on: ubuntu-latest
     
-    # Define the services needed for this job
+    # We use the 'services' block to start Selenium, which is more reliable for this project
     services:
-      # This starts a Selenium container and names it 'selenium'
       selenium:
-        # Use the ARM-compatible image, which also works here
         image: seleniarm/standalone-chromium:latest
-        # This healthcheck makes the job wait until Selenium is fully ready
+        # The healthcheck ensures the job waits until Selenium is fully ready
         options: >-
           --health-cmd "curl --fail http://localhost:4444/wd/hub/status || exit 1"
           --health-interval 10s
@@ -66,13 +93,14 @@ jobs:
       run: npm ci
 
     - name: Run unit tests
+      # This command is defined in your package.json
       run: npm test
 
     - name: Start Node.js server and wait for it to be ready
       run: |
         # Start the server in the background
         node src/server.js &
-        # Actively wait for the server to respond before continuing
+        # Actively wait for the server to respond instead of using a fixed sleep
         while ! curl --silent --fail http://localhost:3000; do
           echo "Waiting for Node.js server..."
           sleep 2
