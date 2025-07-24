@@ -15,17 +15,23 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Run OWASP Dependency-Check
         uses: dependency-check/Dependency-Check_Action@main
         with:
-          # Use the correct project name
           project: "ssd-lab7"
           scan: "."
           format: "HTML"
           out: "reports"
-          # This setting prevents the job from failing on any found vulnerability
           failOnCVSS: 0
-          # IMPORTANT: You must add this secret to your GitHub repository settings
           nvdApiKey: "${{ secrets.NVD_API_KEY }}"
       
       - name: Upload security report
@@ -37,7 +43,6 @@ jobs:
   # Job 2: Build the application and prepare it for testing
   build:
     name: Build and Package
-    # This job runs after the security scan is complete
     needs: owasp-dep-check
     runs-on: ubuntu-latest
     steps:
@@ -65,20 +70,36 @@ jobs:
   # Job 3: Run all tests (Unit and Selenium UI)
   test:
     name: Run Tests (Unit + Selenium)
-    # This job runs after the build is complete
     needs: build
     runs-on: ubuntu-latest
     
-    # We use the 'services' block to start Selenium, which is more reliable for this project
+    # Define the services needed for this job
     services:
       selenium:
         image: seleniarm/standalone-chromium:latest
-        # The healthcheck ensures the job waits until Selenium is fully ready
+        ports:
+          - 4444:4444
         options: >-
           --health-cmd "curl --fail http://localhost:4444/wd/hub/status || exit 1"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+
+      # --- NEW SERVICE DEFINITION FOR YOUR NODE.JS APP ---
+      # This makes your Node.js server accessible at http://testserver:3000 within the job's network
+      appserver:
+        image: node:20-alpine # Using a lightweight Node.js image
+        working-directory: ${{ github.workspace }} # Set working directory to the root of the checked-out code
+        ports:
+          - 3000:3000 # Map port 3000 inside the container
+        command: ["node", "src/server.js"] # Command to start your server
+        # This healthcheck ensures the Node.js server is ready before the test runs
+        options: >-
+          --health-cmd "curl --fail http://localhost:3000 || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # --- END OF NEW SERVICE DEFINITION ---
 
     steps:
     - name: Download build artifact
@@ -93,20 +114,14 @@ jobs:
       run: npm ci
 
     - name: Run unit tests
-      # This command is defined in your package.json
       run: npm test
 
-    - name: Start Node.js server and wait for it to be ready
-      run: |
-        # Start the server in the background
-        node src/server.js &
-        # Actively wait for the server to respond instead of using a fixed sleep
-        while ! curl --silent --fail http://localhost:3000; do
-          echo "Waiting for Node.js server..."
-          sleep 2
-        done
-        echo "Node.js server is up!"
+    # Removed the manual start and wait for Node.js server
+    # The 'appserver' service handles this automatically with its healthcheck
 
     - name: Run Selenium integration tests
-      # Use the 'github' argument to tell the script to use CI URLs
+      # The Server URL is now correctly http://testserver:3000 thanks to the 'appserver' service
       run: node tests/SeleniumTest.mjs github
+
+    # The 'stop-containers' step is not explicitly needed here
+    # as GitHub Actions automatically tears down services after the job.
